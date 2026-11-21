@@ -192,7 +192,10 @@ class ConvertMediaJob extends QueuedJob {
 	{
 		$appPath = $this->appManager->getAppPath('workflow_media_converter');
 
+		// Run the wrapper through sh, so it works even when the app installer
+		// did not preserve the executable bit of bin/ffmpeg-private.
 		return [
+			'/bin/sh',
 			$appPath . '/bin/ffmpeg-private',
 			$this->ffmpegPath,
 		];
