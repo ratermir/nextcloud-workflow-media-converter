@@ -12,7 +12,7 @@
 					:value="
 						(conversionBatch.converted / conversionBatch.unconverted || 0) * 100
 					"
-					:error="['has-errors', 'failed'].includes(conversionBatch.status)" />
+					:error="['has-failures', 'failed'].includes(conversionBatch.status)" />
 				<div v-if="conversionBatch.status !== 'queued'"
 					class="wmc-display-conversion-batch__progress-labels">
 					<small class="wmc-display-conversion-batch__progress-labels-converted">{{ t('workflow_media_converter', 'Converted') }}:
@@ -27,15 +27,13 @@
 				</NcActions>
 			</div>
 		</div>
-		<div v-if="conversionBatch.error"
+		<details v-if="errors.length"
 			class="wmc-display-conversion-batch__error-message">
-			<p>
-				{{ t('workflow_media_converter', '') }} ({{
-					t('workflow_media_converter', 'Error code')
-				}}
-				{{ conversionBatch.error.code }}) {{ conversionBatch.error.message }}
-			</p>
-		</div>
+			<summary>
+				{{ n('workflow_media_converter', '%n error', '%n errors', errors.length) }}
+			</summary>
+			<pre v-for="(error, index) in errors" :key="index">{{ error }}</pre>
+		</details>
 	</div>
 </template>
 
@@ -54,6 +52,12 @@ export default {
 			type: Object,
 		},
 	},
+
+	computed: {
+		errors() {
+			return Array.isArray(this.conversionBatch.errors) ? this.conversionBatch.errors : []
+		},
+	},
 }
 </script>
 
@@ -63,8 +67,23 @@ export default {
 	border-radius: 0.5em;
 
 	&__error-message {
-		p {
-			color: #ff4402;
+		margin-top: .5em;
+
+		summary {
+			cursor: pointer;
+			color: var(--color-error-text, #ff4402);
+		}
+
+		pre {
+			margin: .5em 0;
+			padding: .5em;
+			max-height: 20em;
+			overflow: auto;
+			white-space: pre-wrap;
+			word-break: break-word;
+			font-size: .85em;
+			background-color: var(--color-background-dark);
+			border-radius: var(--border-radius);
 		}
 	}
 

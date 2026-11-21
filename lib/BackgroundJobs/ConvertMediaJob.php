@@ -2,6 +2,7 @@
 
 namespace OCA\WorkflowMediaConverter\BackgroundJobs;
 
+use OCA\WorkflowMediaConverter\Exceptions\MediaConversionFailedException;
 use OCA\WorkflowMediaConverter\Exceptions\MediaConversionLockedException;
 use OCA\WorkflowMediaConverter\Factory\ProcessFactory;
 use OCA\WorkflowMediaConverter\Factory\ViewFactory;
@@ -12,7 +13,7 @@ use OCP\BackgroundJob\QueuedJob;
 use OCP\Files\IRootFolder;
 use OCP\App\IAppManager;
 use Psr\Log\LoggerInterface;
-use Symfony\Component\Process\Exception\ProcessFailedException;
+use Symfony\Component\Process\Process;
 
 class ConvertMediaJob extends QueuedJob {
 	private $logger;
@@ -166,26 +167,53 @@ class ConvertMediaJob extends QueuedJob {
 		return $this;
 	}
 
-	public function convertMedia() {		
+	public function convertMedia() {
 		$process = $this->processFactory->create(
 			command: $this->getConversionCommand(flagsBeforeInput: false)
 		);
 
 		$process->run();
 
+		if ($process->isSuccessful()) {
+			return $this;
+		}
+
+		$firstFailure = $this->describeFailedProcess($process);
+
+		// Only the legacy "additional flags" field changes position on retry.
+		// With input/output flags the retry would run the very same command.
+		if (empty($this->additionalConversionFlags)) {
+			throw new MediaConversionFailedException("FFmpeg conversion failed.\n" . $firstFailure);
+		}
+
+		$this->logger->warning(
+			ConvertMediaJob::class . ' first FFmpeg attempt failed, retrying with flags before input' . "\n" . $firstFailure
+		);
+
+		$process = $this->processFactory->create(
+			command: $this->getConversionCommand(flagsBeforeInput: true)
+		);
+
+		$process->run();
+
 		if (!$process->isSuccessful()) {
-			$process = $this->processFactory->create(
-				command: $this->getConversionCommand(flagsBeforeInput: true)
+			throw new MediaConversionFailedException(
+				"FFmpeg conversion failed.\n"
+				. "Attempt 1 (flags after input):\n" . $firstFailure . "\n"
+				. "Attempt 2 (flags before input):\n" . $this->describeFailedProcess($process)
 			);
-
-			$process->run();
-
-			if (!$process->isSuccessful()) {
-				throw new ProcessFailedException($process);
-			}
 		}
 
 		return $this;
+	}
+
+	private function describeFailedProcess(Process $process, int $tailLines = 15): string {
+		$errorLines = preg_split('/\r\n|\r|\n/', trim($process->getErrorOutput()));
+		$errorTail = implode("\n", array_slice($errorLines, -$tailLines));
+
+		return 'Command: ' . $process->getCommandLine() . "\n"
+			. 'Exit code: ' . $process->getExitCode() . "\n"
+			. 'FFmpeg output (last ' . $tailLines . ' lines):' . "\n" . $errorTail;
 	}
 
 	private function getFfmpegCommand()
@@ -206,6 +234,7 @@ class ConvertMediaJob extends QueuedJob {
 
 		$command = [
 			...$this->getFfmpegCommand(),
+			'-hide_banner',
 			'-threads',
 			$threads
 		];
@@ -313,8 +342,16 @@ class ConvertMediaJob extends QueuedJob {
 		$this->configService->updateBatch($this->batchId, [
 			'status' => 'has-failures',
 			'failed' => ($batch['failed'] ?? 0) + 1,
-			'errors' => array_merge(($batch['errors'] ?? []), ["{$e->getMessage()} -- Error code {$e->getCode()}"])
+			'errors' => array_merge(($batch['errors'] ?? []), [$this->formatBatchError($e)])
 		]);
+	}
+
+	private function formatBatchError(\Throwable $e): string {
+		// Show the path relative to the user's files folder: /<uid>/files/a/b.mp4 -> /a/b.mp4
+		$file = preg_replace('#^/[^/]+/files#', '', (string)$this->path);
+		$code = $e->getCode() ? " (error code {$e->getCode()})" : '';
+
+		return "{$file}{$code}\n{$e->getMessage()}";
 	}
 
 	public function writeFileSafe($folder, $tempFile, $filename) {
